@@ -1,0 +1,9 @@
+ipywidgets
+pyaudio
+wave
+numpy
+matplotlib
+torch
+transformers
+IPython
+librosa
