@@ -21,7 +21,8 @@ CHANNELS = 1  # Mono audio
 RATE = 16000  # Sample rate (Hz), standard for Whisper
 CHUNK_DURATION = CHUNK / RATE  # Duration of each chunk in seconds
 MODEL_PATH = "./model"  # Path to fine-tuned Whisper model
-TRANSCRIPTION_INTERVAL = 2.0  # Seconds of audio to accumulate before transcribing
+TRANSCRIPTION_INTERVAL = 3.0  # Increased to 3 seconds for CPU processing
+SILENCE_THRESHOLD = 0.01  # Amplitude threshold for silence detection
 
 
 def load_whisper_model(model_path):
@@ -30,13 +31,20 @@ def load_whisper_model(model_path):
         logging.info("Loading fine-tuned model...")
         model = WhisperForConditionalGeneration.from_pretrained(model_path)
         processor = WhisperProcessor.from_pretrained(model_path)
+        # Optimize generation config to avoid redundant logits processors
+        model.generation_config.update(
+            suppress_tokens=None,
+            begin_suppress_tokens=None,
+            task="transcribe",
+            language="en",  # Assuming English audio
+        )
         pipe = pipeline(
             "automatic-speech-recognition",
             model=model,
             tokenizer=processor.tokenizer,
             feature_extractor=processor.feature_extractor,
             device=0 if torch.cuda.is_available() else -1,
-            generate_kwargs={"forced_decoder_ids": None},
+            generate_kwargs={"task": "transcribe", "language": "en"},
         )
         logging.info(
             f"Model loaded successfully on {'GPU' if torch.cuda.is_available() else 'CPU'}"
@@ -92,16 +100,25 @@ def transcribe_audio(pipe, audio_queue, transcription_interval):
                 if buffer_duration >= transcription_interval:
                     # Concatenate buffer into a single array
                     audio_data = np.concatenate(audio_buffer)
+                    # Check for silence
+                    if np.max(np.abs(audio_data)) < SILENCE_THRESHOLD:
+                        logging.info("Skipping silent audio chunk")
+                        audio_buffer = []
+                        buffer_duration = 0.0
+                        continue
                     # Resample to ensure 16kHz (should already be 16kHz, but included for robustness)
                     audio_data = librosa.resample(
                         audio_data, orig_sr=RATE, target_sr=16000
                     )
                     # Transcribe
                     try:
+                        start_time = time()
                         result = pipe(audio_data)
                         transcription = result["text"].strip()
                         if transcription:
-                            print(f"Transcription: {transcription}")
+                            print(
+                                f"Transcription: {transcription} (processed in {time() - start_time:.2f}s)"
+                            )
                         else:
                             print("No transcription (silent or empty audio)")
                     except Exception as e:
